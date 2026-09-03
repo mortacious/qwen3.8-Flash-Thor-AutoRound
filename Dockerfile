@@ -97,3 +97,19 @@ RUN python3 /tmp/patch_mamba_align_split.py && rm /tmp/patch_mamba_align_split.p
 # touch /tmp/profile_trigger). This vLLM predates VLLM_TORCH_PROFILER_DIR.
 COPY src/patch_step_profile.py /tmp/patch_step_profile.py
 RUN python3 /tmp/patch_step_profile.py && rm /tmp/patch_step_profile.py
+
+# QSA indexer top-k variants (VLLM_QSA_EXACT_TOPK = 0 | 1 | fill): mode 0 keeps
+# the stock persistent_topk CUDA kernel (default, fastest, what GB10 wants).
+# Mode 1 swaps in an exact torch.topk path that never launches the
+# cooperative-cluster kernel - required on Jetson AGX Thor (sm_110), where the
+# cooperative launch fails with "cluster misconfiguration" (GB10 sm_121 vs
+# Thor cluster geometry). Mode "fill" -inf-masks never-written columns then
+# keeps the stock kernel (diagnostic for the vllm#51782 nondeterminism; still
+# launches the cooperative kernel, so it does NOT fix the Thor crash).
+ARG QSA_PY=${SP}/vllm/models/qwen3_8_flash_next/nvidia/ops/qsa.py
+COPY src/patch_qsa_exact_topk.py /tmp/patch_qsa_exact_topk.py
+RUN cp ${QSA_PY} ${QSA_PY}.orig \
+ && python3 /tmp/patch_qsa_exact_topk.py ${QSA_PY} \
+ && grep -q "^import os" ${QSA_PY} \
+ && python3 -c "import ast; ast.parse(open('${QSA_PY}').read()); print('qsa.py top-k variants added OK')" \
+ && rm /tmp/patch_qsa_exact_topk.py

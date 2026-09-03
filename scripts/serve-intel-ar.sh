@@ -26,6 +26,10 @@ MTP="${MTP:-2}"
 PREWARM="${PREWARM:-1}"
 TOOL_PARSER="${TOOL_PARSER:-qwen3_coder}"
 EXTRA="${EXTRA:-}"
+# QSA indexer top-k mode: 0 = stock cooperative kernel (GB10 default);
+# 1 = exact torch.topk (REQUIRED on Jetson AGX Thor - the cooperative
+# kernel fails to launch there); "fill" = diagnostic only.
+QSA_EXACT_TOPK="${QSA_EXACT_TOPK:-0}"
 # KV_BYTES: size the KV cache explicitly (e.g. 13.2g) instead of by
 # gpu-memory-utilization fraction — deterministic footprint on unified-memory
 # boxes where "free memory" profiling is unreliable. Pair with a tiny GPU_MEM.
@@ -70,6 +74,7 @@ docker run -d --name "$NAME" --restart unless-stopped \
   -e VLLM_PLE_MMAP_MADV_RANDOM="${PLE_MADV_RANDOM:-0}" \
   -e VLLM_HIT_DEBUG="${HIT_DEBUG:-0}" \
   -e VLLM_STEP_PROFILE="${STEP_PROFILE:-0}" \
+  -e VLLM_QSA_EXACT_TOPK="${QSA_EXACT_TOPK}" \
   -e VLLM_PLE_MMAP_DIR=/ple-table \
   -e VLLM_MARLIN_USE_ATOMIC_ADD=1 \
   -e VLLM_FP8_HYBRID="${FP8_HYBRID:-1}" \

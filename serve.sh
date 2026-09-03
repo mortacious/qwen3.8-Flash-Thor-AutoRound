@@ -30,6 +30,7 @@ export PLE_MADV_RANDOM=0
 # Prefix-cache diagnosis logging (VLLM_HIT_DEBUG=1 in the container):
 # per-group hit breakdown, mamba boundary publication, evictions, chunk stops.
 export HIT_DEBUG=0
+export QSA_EXACT_TOPK="${QSA_EXACT_TOPK:-0}"   # set to 1 on Jetson AGX Thor (cooperative topk kernel does not launch there)
 
 # Never-evict pin: any request whose prompt contains this exact substring has
 # its prompt-prefix KV blocks pinned (held out of eviction) — meant for a
