@@ -1,13 +1,18 @@
 # AI Slop Warning
 Although the working vLLM is in my GB10, this fork is prepared by Mr. Claude so it's very likely something will break or cannot reproduce, ~~especially the claimed prefix cache fix part.~~ should be really fixed.
 
-# Qwen3.8-Flash-Next on a single DGX Spark (GB10) — int4 + int8 + fp8 hybrid
+# Qwen3.8-Flash-Next on DGX Spark (GB10) and Jetson AGX Thor — int4 + int8 + fp8 hybrid
 
 Run **Qwen3.8-Flash-Next** — a ~176B-parameter model (125B main + 51B n-gram, 6B
 active) — on **one NVIDIA DGX Spark / ASUS GX10** with **vLLM**: **~49 tok/s
 single-stream decode with MTP=3** (~2,000 tok/s prefill), working **prefix
 caching**, and a **never-evict pin** that keeps your system prompt's KV resident
 through arbitrary traffic.
+
+It now also runs on a **Jetson AGX Thor** (sm_110) - see the
+[Thor port](#jetson-agx-thor-port-sm_110) below. Two env knobs differ from
+the Spark and are baked into `serve.sh` as Thor defaults; everything else is
+shared.
 
 Forked from **[blazux/qwen3.8-Flash-DGX](https://github.com/blazux/qwen3.8-Flash-DGX)**,
 which established the foundation this fork stands on: the ~49 GiB fp8 n-gram ("PLE")
@@ -139,6 +144,34 @@ two portable takeaways: per-token page-fault cost *falls* with concurrency
 queues requests — check `vllm:request_queue_time_seconds_sum` before quoting
 an aggregate number.
 
+## Jetson AGX Thor port (sm_110)
+
+The same image, checkpoint, and serve scripts run on a **Jetson AGX Thor
+(sm_110, aarch64)** with no image rebuild. The base image's custom kernels
+cover most of sm_110, but two paths fall back, and `serve.sh` now defaults
+to the Thor-safe values for both:
+
+| Knob | Thor | Spark | Why |
+|---|---|---|---|
+| `QSA_EXACT_TOPK` | `1` | `0` | The QSA indexer's cooperative topk kernel fails to launch on sm_110 (cluster misconfiguration). Patch 9 dispatches to an exact `torch.topk` instead. |
+| `GDN_DECODE_KERNEL` | `triton` | `cuda` | The fused GDN decode MTP kernel ships only sm_100/sm_120 cubins in the `qwen38-flash-next` image (no PTX), so spec decoding crashes with "no kernel image is available" (upstream [vllm#53462](https://github.com/vllm-project/vllm/issues/53462)). The Triton fallback is arch-portable; upstream PR [#53835](https://github.com/vllm-project/vllm/pull/53835) adds `11.0f` to the kernel's build arch list if you want the fused path back (a multi-hour on-device rebuild, only worth it if Triton throughput disappoints). |
+
+On a DGX Spark, launch with
+`QSA_EXACT_TOPK=0 GDN_DECODE_KERNEL=cuda ./serve.sh` to restore the fused
+kernels. With the two Thor defaults,
+MTP=3 works out of the box on the Thor.
+
+Measured with `bench/decode_bench.py` on the Thor (medians of 3; same W1/W2
+definitions as the appendix; `serve.sh` defaults, MTP=3, triton GDN kernel):
+
+| | W1 (fresh 1000-token decode) | W2 (pinned ~8k prefix hit + 256 tokens) |
+|---|---|---|
+| decode | 32.1 tok/s (runs: 26.9 / 32.1 / 34.7) | 40.4 tok/s (runs: 34.8 / 40.4 / 42.9) |
+| TTFT | 1.38 s cold, ~0.20 s warm | 1.39 s |
+
+Spec-decode acceptance on Thor: 2.37-2.62 tok/step (46-54% accept) on W1,
+2.87-3.04 tok/step (62-68% accept) on W2.
+
 ## Requirements
 
 - An **NVIDIA DGX Spark or compatible GB10 (sm_121)** box, 128 GB unified memory,
@@ -147,6 +180,8 @@ an aggregate number.
   storage (the table is read at runtime — NVMe strongly recommended).
 - The base image is multi-arch, so `docker build` also works on x86 Blackwell
   (sm_120) for testing, though this is tuned for the Spark.
+- Or a **Jetson AGX Thor (sm_110, aarch64)** - `serve.sh` defaults are
+  Thor-oriented; on a Spark revert the two knobs per the Thor port section.
 
 ## Quickstart
 
@@ -223,6 +258,8 @@ or edit the paths in `serve.sh` (the example config used above) and run it.
 | `GPU_MEM` | `0.01` | Near-zero pool fraction, paired with `KV_BYTES`: deterministic sizing, so the driver never oversubscribes the unified pool (`NV_ERR_NO_MEMORY` / Xid 31 freezes). Bare script: a `0.85` fraction — avoid on unified-memory boxes. |
 | `KV_BYTES` | `20g` | Explicit KV pool size, passed as `--kv-cache-memory-bytes` (bare script: unset) |
 | `MTP` | `3` | Speculative tokens from the MTP head (`0` = off; bare script: `2`) |
+| `QSA_EXACT_TOPK` | `1` | Exact-topk dispatch for the QSA indexer (patch 9); required on Thor (sm_110), Spark: `0` |
+| `GDN_DECODE_KERNEL` | `triton` | GDN decode kernel; required on Thor (sm_110) with MTP (vllm#53462), Spark: `cuda` |
 | `PREFIX_CACHE` | `1` | Prefix caching — fixed and recommended on this fork (bare script: `0`) |
 | `PIN_PROMPT` / `PIN_MAX_FRACTION` | unset / `0.25` | Never-evict pin (patch 6); needs `PREFIX_CACHE=1` |
 | `FP8_HYBRID` | `1` | int4+fp8 hybrid dispatch (patch 4) |
@@ -402,6 +439,17 @@ boundary-state publication (which slots were real/null/hashed), cached-block
 evictions, and prefill chunk-stop decisions. This is what found the bug in
 patch 5; costs nothing when off.
 
+### 9. QSA exact-topk dispatch (`src/patch_qsa_exact_topk.py`, `QSA_EXACT_TOPK`)
+
+The QSA sparse-attention indexer picks its top-k blocks with a custom
+cooperative kernel (`persistent_topk`) that fails to launch on Jetson AGX
+Thor (sm_110). This build-time patch wraps the `topk_op(...)` call site in
+the model's `nvidia/ops/qsa.py` with a dispatch on `VLLM_QSA_EXACT_TOPK`:
+`0`/unset = stock kernel (Spark behavior), `1` = exact `torch.topk`
+(Thor; the only mode that avoids the failing kernel), `fill` = diagnostic
+(`-inf` mask then the stock kernel). The Dockerfile applies it and
+validates the result with `ast.parse` plus an import-rewrite guard.
+
 ## Speculative decoding and TTFT
 
 MTP raises decode substantially but puts a floor (~0.8 s) under
@@ -425,6 +473,7 @@ src/vllm_fp8_hybrid.py        int4+fp8 hybrid dispatch on the GPTQ config
 src/patch_never_evict.py      never-evict system-prompt KV pinning
 src/patch_mamba_align_split.py  prefix-cache chunk-alignment fix
 src/patch_hit_debug.py        prefix-cache tracing (VLLM_HIT_DEBUG)
+src/patch_qsa_exact_topk.py   exact-topk dispatch for the QSA indexer (VLLM_QSA_EXACT_TOPK)
 src/mamba_utils_guarded.py    hardened align-mode state copy (vllm#50729 + guard)
 src/test_ple_mmap_cpu.py      CPU unit test for the gather (no GPU needed)
 src/test_never_evict_pin.py   CPU unit test for the pin (no GPU needed)
