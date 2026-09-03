@@ -14,7 +14,7 @@ export PORT=8000
 export SERVED_NAME=qwen
 export TOOL_PARSER=qwen3_xml
 export SEQS=8
-export MTP=3
+export MTP="${MTP:-3}"
 export PREFIX_CACHE=1
 
 # Deterministic memory sizing for unified-memory boxes (GB10 / DGX Spark):
