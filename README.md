@@ -1,6 +1,3 @@
-# AI Slop Warning
-Although the working vLLM is in my GB10, this fork is prepared by Mr. Claude so it's very likely something will break or cannot reproduce, ~~especially the claimed prefix cache fix part.~~ should be really fixed.
-
 # Qwen3.8-Flash-Next on DGX Spark (GB10) and Jetson AGX Thor — int4 + int8 + fp8 hybrid
 
 Run **Qwen3.8-Flash-Next** — a ~176B-parameter model (125B main + 51B n-gram, 6B
