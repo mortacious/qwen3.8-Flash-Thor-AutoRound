@@ -30,6 +30,10 @@ EXTRA="${EXTRA:-}"
 # 1 = exact torch.topk (REQUIRED on Jetson AGX Thor - the cooperative
 # kernel fails to launch there); "fill" = diagnostic only.
 QSA_EXACT_TOPK="${QSA_EXACT_TOPK:-0}"
+# GDN decode kernel: Thor (sm_110) workaround - the fused CUDA GDN decode
+# kernel has no sm_110 cubin in the qwen38-flash-next image, so MTP/spec-decode
+# needs VLLM_GDN_DECODE_KERNEL=triton there (vllm#53462); leave cuda on DGX Spark.
+GDN_DECODE_KERNEL="${GDN_DECODE_KERNEL:-cuda}"
 # KV_BYTES: size the KV cache explicitly (e.g. 13.2g) instead of by
 # gpu-memory-utilization fraction — deterministic footprint on unified-memory
 # boxes where "free memory" profiling is unreliable. Pair with a tiny GPU_MEM.
@@ -75,6 +79,7 @@ docker run -d --name "$NAME" --restart unless-stopped \
   -e VLLM_HIT_DEBUG="${HIT_DEBUG:-0}" \
   -e VLLM_STEP_PROFILE="${STEP_PROFILE:-0}" \
   -e VLLM_QSA_EXACT_TOPK="${QSA_EXACT_TOPK}" \
+  -e VLLM_GDN_DECODE_KERNEL="${GDN_DECODE_KERNEL}" \
   -e VLLM_PLE_MMAP_DIR=/ple-table \
   -e VLLM_MARLIN_USE_ATOMIC_ADD=1 \
   -e VLLM_FP8_HYBRID="${FP8_HYBRID:-1}" \

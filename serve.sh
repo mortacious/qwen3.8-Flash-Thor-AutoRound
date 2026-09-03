@@ -31,6 +31,7 @@ export PLE_MADV_RANDOM=0
 # per-group hit breakdown, mamba boundary publication, evictions, chunk stops.
 export HIT_DEBUG=0
 export QSA_EXACT_TOPK="${QSA_EXACT_TOPK:-0}"   # set to 1 on Jetson AGX Thor (cooperative topk kernel does not launch there)
+# GDN_DECODE_KERNEL=triton is needed on Jetson AGX Thor when MTP is enabled (fused GDN kernel has no sm_110 cubin)
 
 # Never-evict pin: any request whose prompt contains this exact substring has
 # its prompt-prefix KV blocks pinned (held out of eviction) — meant for a
