@@ -36,7 +36,7 @@ base="$(basename "$model_dir")"
 output="$(basename "$out_dir")"
 docker_common=(docker run --rm --network none --memory 8g --ipc=host
   --user "$(id -u):$(id -g)" -e PYTHONDONTWRITEBYTECODE=1
-  -v "$here:/work:ro" -v "$models_root:/models" -w /work
+  -v "$here:/work:ro" -v "$models_root:/models" -w /tmp
   --entrypoint python3 "$image")
 build_args=(/work/build_int4side_model_dir.py --tier drafter-dense --group-size 32
   --model-dir "/models/$base" --out-dir "/models/$output")
