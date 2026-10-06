@@ -1,41 +1,48 @@
 #!/usr/bin/env bash
-# Example launcher for scripts/serve-intel-ar.sh — point the paths at your
-# machine (or keep your real settings as a local-only commit on top of this).
-# Every knob here is passed through to serve-intel-ar.sh's docker run;
-# anything unset falls back to that script's defaults.
+# Top-level launcher for the UltraFast v16b stack: it hands off to
+# scripts/serve-ultrafast.sh, which loads config/ultrafast/env and builds the
+# docker run command for the v16b image.
+#
+# Paths below are derived from this script's own location (REPO_ROOT), so the
+# SAME committed file works on every machine with no local path edits: the
+# checkpoints live under $REPO_ROOT/models on both the host clone and the
+# Thor device clone.
+#
+# The served model name defaults to qwen38-flash-next for API compatibility
+# with callers that already address that name; override SERVED_NAME (or
+# MODEL_DIR / TABLE_DIR) in the environment to change any of them, since the
+# ${VAR:-default} form keeps caller overrides.
+#
+# The previous, non-ultrafast stack remains available via
+# scripts/serve-intel-ar.sh if you need it.
+#
+#   ./serve.sh --print    # print the command + env, launch nothing
+#   ./serve.sh            # expand the vocab, then launch
 cd "$(dirname "$0")"
+REPO_ROOT="$PWD"
 
-# Required: the prepared checkpoint (int4 experts + int8 lm_head + fp8 side
-# layers — see tools/) and the stripped fp8 ngram/PLE table directory.
-export MODEL_DIR="/path/to/Qwen3.8-Flash-Next-W4A16-AutoRound-hybrid"
-export TABLE_DIR="/path/to/ple-table-fp8"
+export MODEL_DIR="${MODEL_DIR:-$REPO_ROOT/models/Qwen3.8-Flash-Next-W4A16-AutoRound-hybrid-mtpdense-g32}"
+export TABLE_DIR="${TABLE_DIR:-$REPO_ROOT/models/ple-table-fp8}"
+export SERVED_NAME="${SERVED_NAME:-qwen38-flash-next}"
 
-export PORT=8000
-export SERVED_NAME=qwen
-export TOOL_PARSER=qwen3_xml
-export SEQS=8
-export MTP="${MTP:-3}"
-export PREFIX_CACHE=1
+# Fail early with a clear message when the required artifacts are missing,
+# except for --print: that path only reports the command and must work on a
+# clone that has no checkpoints yet.
+case " $* " in
+  *" --print "*)
+    ;;
+  *)
+    if [ ! -d "$MODEL_DIR" ]; then
+      echo "serve.sh: MODEL_DIR not found: $MODEL_DIR" >&2
+      echo "serve.sh: build the prepared checkpoint with tools/ultrafast-build/build.sh first" >&2
+      exit 1
+    fi
+    if [ ! -d "$TABLE_DIR" ]; then
+      echo "serve.sh: TABLE_DIR not found: $TABLE_DIR" >&2
+      echo "serve.sh: fetch the PLE/ngram table as described in the README" >&2
+      exit 1
+    fi
+    ;;
+esac
 
-# Deterministic memory sizing for unified-memory boxes (GB10 / DGX Spark):
-# near-zero utilization fraction plus an explicit KV pool, so the driver
-# never oversubscribes the unified pool (NV_ERR_NO_MEMORY / Xid 31 crashes).
-export GPU_MEM=0.01
-export KV_BYTES=20g
-
-# Set to 1 when TABLE_DIR sits on remote RAM or there is no page-cache
-# headroom: madvise(MADV_RANDOM) the PLE mmap so faults stay single-page.
-export PLE_MADV_RANDOM=0
-
-# Prefix-cache diagnosis logging (VLLM_HIT_DEBUG=1 in the container):
-# per-group hit breakdown, mamba boundary publication, evictions, chunk stops.
-export HIT_DEBUG=0
-export QSA_EXACT_TOPK="${QSA_EXACT_TOPK:-1}"   # 1 required on Jetson AGX Thor (cooperative topk kernel does not launch there); DGX Spark: QSA_EXACT_TOPK=0
-export GDN_DECODE_KERNEL="${GDN_DECODE_KERNEL:-triton}"   # triton required on Jetson AGX Thor when MTP is enabled (fused GDN kernel has no sm_110 cubin); DGX Spark: GDN_DECODE_KERNEL=cuda
-
-# Never-evict pin: any request whose prompt contains this exact substring has
-# its prompt-prefix KV blocks pinned (held out of eviction) — meant for a
-# long fixed system prompt. Empty disables it.
-export PIN_PROMPT=''
-
-exec scripts/serve-intel-ar.sh
+exec scripts/serve-ultrafast.sh "$@"
