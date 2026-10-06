@@ -37,6 +37,19 @@ Knobs (env):
                              the mid-layer-1 lookup op only copies ready rows
                              (hides the page-fault latency behind layer-0
                              compute). Off by default; lightly tested.
+  VLLM_PLE_MMAP_FAST_PATH=0  1 = gather rows with posix_fadvise(WILLNEED) +
+                             os.preadv instead of thread-pooled np.memmap
+                             fancy indexing. Same bytes in the same order --
+                             only the mechanism changes -- but ~6x less time
+                             per decode-width gather, because the pool costs
+                             more than the reads at that width and numpy takes
+                             its page faults with the GIL held. Off by default:
+                             unset, the module is byte-for-byte the old one.
+  VLLM_PLE_MMAP_FAST_MAX_ROWS=8192
+                             gathers wider than this keep the pooled path
+                             (prefill: the per-row Python loop of the fast path
+                             stops paying off once tasks are big enough to
+                             amortise the pool).
 
 Install: the Dockerfile copies this file next to vllm and appends
 ``_ple_mmap_apply(Qwen3_8FlashNextNGramEmbedding)`` to the end of
@@ -63,6 +76,7 @@ import torch.nn as nn
 logger = logging.getLogger("vllm.ple_mmap")
 
 ENV_ENABLE = "VLLM_PLE_MMAP"
+ENV_FAST_PATH = "VLLM_PLE_MMAP_FAST_PATH"
 _FP8_DTYPES = {
     "F8_E4M3": torch.float8_e4m3fn,
     "F8_E5M2": torch.float8_e5m2,
@@ -98,6 +112,69 @@ def parse_safetensors_header(path: str) -> tuple[dict, int]:
         header = json.loads(f.read(header_len))
     header.pop("__metadata__", None)
     return header, 8 + header_len
+
+
+# --------------------------------------------------------------------------- #
+# VLLM_PLE_MMAP_FAST_PATH=1: syscall gather instead of pooled memmap faults
+#
+# Profile of the v13 pooled path at decode width (160 unique rows, the real
+# 47.68 GiB / 128-shard table, WORKERS=32 CHUNK=8 FAST_ROWS=16 MADV_RANDOM=1):
+#
+#     np.unique                0.030 ms    0.7 %
+#     shard/local/task prep    0.040 ms    0.9 %
+#     pool.map (the gather)    4.276 ms   98.0 %
+#     out[inverse] scatter     0.015 ms    0.3 %
+#                             ---------
+#                              4.364 ms/op  cold   (1.885 ms/op on warm rows)
+#
+# The caller (_MmapNgramEmbedding.forward) already deduplicates, so the ids
+# arrive sorted; spread over 128 shards they form ~92 shard-groups of ~1.7 rows
+# each, i.e. ~92 pool tasks per decode step. Dispatching 92 EMPTY tasks through
+# that executor costs 0.53 ms on its own, and the same gather run serially takes
+# 0.37 ms once the rows are cached: the pool is pure overhead on warm rows, and
+# on cold ones it recovers only 3x of a possible 32x because np.memmap fancy
+# indexing takes its page faults with the GIL held.
+#
+# So the fast path drops the pool and asks the kernel for the parallelism:
+#   1. posix_fadvise(WILLNEED) over each row -- async, so one pass queues all
+#      ~160 page-ins at block-layer depth instead of thread depth;
+#   2. os.preadv straight into the output rows -- one syscall per row, GIL
+#      released for the syscall, and the pages are already in flight by then.
+# Same file, same offsets, same bytes, same order, same exceptions.
+#
+# Measured on the real table (this box, same id sets, ms/op):
+#     rows        16     64    160    512   2048   8192
+#     old cold  1.74   2.42   3.94   6.17  14.57  50.75
+#     new cold  0.27   0.44   0.61   1.63   5.79  22.26
+#     old warm  0.10   1.12   2.32   3.51   9.37  26.30
+#     new warm  0.04   0.06   0.16   0.55   1.98   9.05
+# The WILLNEED pass is what makes it work: serial preadv WITHOUT it is 9.15 ms
+# cold at 160 rows (every read stalls on its own I/O), and pooled preadv WITH it
+# is 1.94 ms (the pool overhead is back).
+# --------------------------------------------------------------------------- #
+_FADV_WILLNEED = getattr(os, "POSIX_FADV_WILLNEED", None)
+
+
+def _fast_path_enabled() -> bool:
+    return os.environ.get(ENV_FAST_PATH, "0").lower() in ("1", "true", "yes")
+
+
+def _preadv_rest(fd: int, row, off: int, got: int, row_bytes: int) -> None:
+    """Finish a short ``preadv``.
+
+    A regular file below EOF does not normally return one, but a signal can cut
+    a read short and a half-filled row would be silent corruption, so the fast
+    path checks every read and lands here on the rare short one.
+    """
+    mv = memoryview(row)
+    while got < row_bytes:
+        n = os.preadv(fd, (mv[got:],), off + got)
+        if n <= 0:
+            raise OSError(
+                f"PLE mmap: short read at offset {off} "
+                f"({got}/{row_bytes} bytes)"
+            )
+        got += n
 
 
 class MmapPleTable:
@@ -146,6 +223,61 @@ class MmapPleTable:
             self.rows_total += rows
         self.pool = ThreadPoolExecutor(max_workers=max(1, int(workers)))
         self.fast_rows = _env_int("VLLM_PLE_MMAP_FAST_ROWS", 512)
+        # VLLM_PLE_MMAP_FAST_PATH (see the comment block above this class).
+        # Everything below is inert unless the variable is set.
+        self._fast = False
+        self._fast_fds: list[int] = []
+        self._fd_of: np.ndarray | None = None
+        self._base_of: np.ndarray | None = None
+        self._fast_all_present = False
+        self._fast_max_rows = _env_int("VLLM_PLE_MMAP_FAST_MAX_ROWS", 8192)
+        if _fast_path_enabled():
+            self._setup_fast_path()
+
+    def _setup_fast_path(self) -> None:
+        """Open one O_RDONLY fd per shard FILE and tabulate (fd, base offset)
+        per shard index. ``np.memmap`` closes its own descriptor once the
+        mapping exists, so the syscall path needs its own; there are 33 files
+        behind the 128 shards, hence 33 fds for the life of the process."""
+        if _FADV_WILLNEED is None or not hasattr(os, "preadv"):
+            logger.warning(
+                "PLE mmap: FAST_PATH asked for but posix_fadvise/preadv are "
+                "unavailable; keeping the pooled path"
+            )
+            return
+        n = len(self.mm)
+        fd_of = np.full(n, -1, dtype=np.int64)
+        base_of = np.zeros(n, dtype=np.int64)
+        by_path: dict[str, int] = {}
+        try:
+            for idx, (path, mm) in enumerate(zip(self.paths, self.mm)):
+                if path is None or mm is None:
+                    continue
+                fd = by_path.get(path)
+                if fd is None:
+                    fd = os.open(path, os.O_RDONLY)
+                    by_path[path] = fd
+                    self._fast_fds.append(fd)
+                fd_of[idx] = fd
+                base_of[idx] = int(mm.offset)
+        except OSError as exc:
+            logger.warning("PLE mmap: FAST_PATH setup failed (%s); keeping "
+                           "the pooled path", exc)
+            for fd in self._fast_fds:
+                try:
+                    os.close(fd)
+                except OSError:
+                    pass
+            self._fast_fds = []
+            return
+        self._fd_of = fd_of
+        self._base_of = base_of
+        self._fast_all_present = bool((fd_of >= 0).all())
+        self._fast = True
+        logger.info(
+            "PLE mmap: FAST_PATH on (fadvise+preadv gather, %d fds, "
+            "max_rows=%d)", len(self._fast_fds), self._fast_max_rows,
+        )
 
     def gather(self, ids: np.ndarray) -> np.ndarray:
         """ids: int64 [N] global row ids -> uint8 [N, row_bytes] (a fresh array)."""
@@ -163,6 +295,20 @@ class MmapPleTable:
         ids = np.ascontiguousarray(ids, dtype=np.int64).reshape(-1)
         if ids.size == 0:
             return np.empty((0, self.row_bytes), dtype=np.uint8)
+        if self._fast and ids.size <= self._fast_max_rows:
+            try:
+                rows = self._gather_fast(ids)
+            except OSError as exc:
+                # fadvise/preadv stopped working (a closed fd, a full-blown I/O
+                # error): never try again, fall through to the pooled path.
+                self._fast = False
+                logger.warning(
+                    "PLE mmap: FAST_PATH disabled after %r; falling back to "
+                    "the pooled path", exc,
+                )
+            else:
+                _STATS["fast"] += 1
+                return rows
         if ids.size <= self.fast_rows:
             # Decode-sized batches: thread-pool dispatch costs more than the
             # reads themselves (~50 tasks for ~65 rows). Gather inline instead.
@@ -214,6 +360,60 @@ class MmapPleTable:
             for _ in self.pool.map(run, tasks):
                 pass
         return out[inverse]
+
+    def _gather_fast(self, ids: np.ndarray) -> np.ndarray:
+        """VLLM_PLE_MMAP_FAST_PATH=1 gather. Bit-identical to ``_gather``.
+
+        ``ids`` is already contiguous int64 1-D and non-empty. The returned
+        array is a fresh, writable, C-contiguous uint8 ``[ids.size, row_bytes]``
+        -- exactly what the pooled path returns, and the range check raises the
+        same ``IndexError`` with the same message, since ``ids.min()/max()``
+        are ``uniq[0]/uniq[-1]``.
+        """
+        lo = int(ids.min())
+        hi = int(ids.max())
+        if lo < 0 or hi >= self.shard_size * len(self.mm):
+            raise IndexError(
+                f"PLE row id out of range: [{lo}, {hi}] "
+                f"for {self.rows_total} rows"
+            )
+        # The caller deduplicates before us, so the common case is an already
+        # strictly increasing array: then uniq is ids and inverse is arange,
+        # and both np.unique and the out[inverse] scatter can be skipped. The
+        # check is exact -- anything else goes through np.unique as before.
+        inverse = None
+        if ids.size > 1 and not bool((ids[1:] > ids[:-1]).all()):
+            uniq, inverse = np.unique(ids, return_inverse=True)
+        else:
+            uniq = ids
+        shard = uniq // self.shard_size
+        fds_a = self._fd_of[shard]
+        if not self._fast_all_present and int(fds_a.min()) < 0:
+            raise IndexError(
+                f"PLE shard {int(shard[int(np.argmin(fds_a))])} missing"
+            )
+        row_bytes = self.row_bytes
+        offs = self._base_of[shard] + (uniq - shard * self.shard_size) * row_bytes
+        fds = fds_a.tolist()
+        offl = offs.tolist()
+        out = np.empty((uniq.size, row_bytes), dtype=np.uint8)
+
+        # Pass 1: hand the kernel every page at once. posix_fadvise(WILLNEED)
+        # returns as soon as the read is queued, so this pass costs syscalls,
+        # not I/O waits, and the device sees ~160 outstanding reads instead of
+        # the 32 a thread pool can hold.
+        fadvise = os.posix_fadvise
+        willneed = _FADV_WILLNEED
+        for fd, off in zip(fds, offl):
+            fadvise(fd, off, row_bytes, willneed)
+        # Pass 2: read into the output rows. os.preadv releases the GIL for the
+        # syscall and writes straight into `out` -- no intermediate buffer.
+        preadv = os.preadv
+        for row, fd, off in zip(out, fds, offl):
+            got = preadv(fd, (row,), off)
+            if got != row_bytes:
+                _preadv_rest(fd, row, off, got, row_bytes)
+        return out if inverse is None else out[inverse]
 
     def prewarm(self) -> None:
         """Stream every shard once so the page cache holds as much as it can."""
@@ -519,7 +719,8 @@ _OP_NAME = "ple_mmap_lookup"
 # Aggregate gather-overhead stats, logged every VLLM_PLE_MMAP_STATS_SEC seconds
 # (0 = off). op_ms covers hashing + gather + H2D; gather_ms just the disk reads.
 _PREFETCH = __import__("threading").local()  # set during the batch-assembly hash
-_STATS = {"calls": 0, "op_ms": 0.0, "gather_ms": 0.0, "rows": 0, "bytes": 0}
+_STATS = {"calls": 0, "op_ms": 0.0, "gather_ms": 0.0, "rows": 0, "bytes": 0,
+          "fast": 0}
 _STATS_LAST = [0.0]
 _STATS_SEC = _env_int("VLLM_PLE_MMAP_STATS_SEC", 30)
 
@@ -538,13 +739,13 @@ def _stats_log() -> None:
     logger.info(
         "PLE mmap stats (last %.0fs): %d ops, op %.0f ms total (%.2f ms/op), "
         "gather %.0f ms total (%.2f ms/op), %d rows, %.1f MiB read, "
-        "prefetch hit %d miss %d",
+        "prefetch hit %d miss %d, fast %d",
         elapsed, s["calls"], s["op_ms"], s["op_ms"] / s["calls"],
         s["gather_ms"], s["gather_ms"] / s["calls"],
         s["rows"], s["bytes"] / 2**20,
-        s.get("pf_hit", 0), s.get("pf_miss", 0),
+        s.get("pf_hit", 0), s.get("pf_miss", 0), s.get("fast", 0),
     )
-    s.update(calls=0, op_ms=0.0, gather_ms=0.0, rows=0, bytes=0)
+    s.update(calls=0, op_ms=0.0, gather_ms=0.0, rows=0, bytes=0, fast=0)
 
 
 def _lookup_impl(

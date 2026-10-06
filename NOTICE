@@ -1,0 +1,32 @@
+Qwen3.8 Flash - Jetson AGX Thor / DGX Spark, int4 + int8 + fp8 AutoRound hybrid
+Copyright 2026 blazux
+
+This project is licensed under the Apache License, Version 2.0. See LICENSE.
+If you redistribute this work or a derivative of it, keep this NOTICE file
+and credit the parties below as described in section 4(d) of the license.
+
+This repository is the Jetson AGX Thor (sm_110) port of the DGX Spark
+(GB10) serving recipe: the same lineage, with the Thor-specific gates
+(exact top-k indexer, Triton GDN decode) and the v16b feature set ported
+onto sm_110.
+
+This repository contains code derived from:
+Saren-Arterius/qwen3.8-Flash-DGX-AutoRound
+https://github.com/Saren-Arterius/qwen3.8-Flash-DGX-AutoRound
+Copyright 2026 blazux. Licensed under the Apache License, Version 2.0.
+
+dime-online/qwen3.8-Flash-DGX-UltraFast
+https://github.com/dime-online/qwen3.8-Flash-DGX-UltraFast
+Copyright 2026 dime-online. Licensed under the Apache License, Version 2.0.
+The v16b optimization set vendored here (src/patch_*.py,
+src/vllm_mtp_draft_vocab.py, src/draft_vocab_common.py, the extended
+src/vllm_ple_mmap.py and src/vllm_fp8_hybrid.py, src/test_*.py,
+tools/ultrafast-build/ and config/ultrafast/) comes from that recipe.
+Files without an inline SPDX header carry an adjacent .license sidecar.
+
+The source snapshot includes patches to vLLM files and ports of public vLLM
+changes, also under the Apache License, Version 2.0. The vLLM project is
+credited at https://github.com/vllm-project/vllm .
+
+Model weights, datasets and downloaded container layers are not included in
+this repository and remain under their own terms.

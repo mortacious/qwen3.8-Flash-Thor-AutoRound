@@ -1,0 +1,94 @@
+# Jetson AGX Thor (sm_110) port of the UltraFast v16b feature set, layered on
+# the local Thor base image (the one the existing Dockerfile / serve scripts
+# build and run). Nothing here rebuilds the base: the base already carries the
+# mmap PLE hook, the fp8-hybrid hook, the never-evict / hit-debug / mamba-align
+# / step-profile / QSA-exact-topk patches, and the guarded mamba utils.
+#
+#   docker build -f Dockerfile.ultrafast -t qwen38-flash-dgx:ultrafast-thor-20261006 .
+#
+# or just: scripts/build-ultrafast.sh
+#
+# What this layer adds, in the order it is applied:
+#   1. the two extended runtime modules (PLE fast path, drafter-experts fp8),
+#      dropped over the base image's copies at the SAME install paths, so the
+#      hooks the base image appended to ple_layer.py / auto_gptq.py keep
+#      working untouched.
+#   2. the reduced MTP draft vocabulary (K=65536) + its hook on the MTP class.
+#   3. the three v16b source patches. Order matters only for block drop: it
+#      anchors on the line patch_hit_debug.py inserts into
+#      single_type_kv_cache_manager.py, which the base image already inserted.
+#   4. the in-image regression gates, as a build gate: the image does not
+#      build unless all three pass.
+#
+# SPDX-License-Identifier: Apache-2.0
+ARG BASE_IMAGE=qwen38-flash-dgx
+FROM ${BASE_IMAGE}
+
+# Same layout as the base Dockerfile (vLLM 0.1.dev20073, python 3.12).
+ARG SP=/usr/local/lib/python3.12/dist-packages
+ARG MTP_PY=${SP}/vllm/models/qwen3_8_flash_next/nvidia/mtp.py
+
+# ---------------------------------------------------------------------------
+# 1. Extended runtime modules (drop-in replacements, same install paths).
+#
+# src/vllm_ple_mmap.py adds VLLM_PLE_MMAP_FAST_PATH / ..._FAST_MAX_ROWS on top
+# of the base image's copy; src/vllm_fp8_hybrid.py adds the independent
+# VLLM_DRAFTER_EXPERTS_FP8 switch on top of the base image's VLLM_FP8_HYBRID
+# dispatch. Both stay no-ops with their knobs unset, so a container started
+# with the existing serve script behaves exactly like the base image.
+# ---------------------------------------------------------------------------
+COPY src/vllm_ple_mmap.py ${SP}/vllm_ple_mmap.py
+COPY src/vllm_fp8_hybrid.py ${SP}/vllm_fp8_hybrid.py
+RUN python3 -c "import ast; [ast.parse(open(p).read()) for p in ('${SP}/vllm_ple_mmap.py','${SP}/vllm_fp8_hybrid.py')]; print('extended ple_mmap + fp8_hybrid installed OK')"
+
+# ---------------------------------------------------------------------------
+# 2. Reduced MTP draft vocabulary. Mirrors the upstream recipe's iter6c layer:
+# two modules on the import path plus an appended hook on the MTP class. No-op
+# unless VLLM_MTP_DRAFT_VOCAB points at an id list at runtime.
+# ---------------------------------------------------------------------------
+COPY src/draft_vocab_common.py ${SP}/draft_vocab_common.py
+COPY src/vllm_mtp_draft_vocab.py ${SP}/vllm_mtp_draft_vocab.py
+RUN printf '\n\n# --- qwen38-flash-dgx: reduced MTP draft vocabulary (VLLM_MTP_DRAFT_VOCAB) ---\nfrom vllm_mtp_draft_vocab import apply as _mtp_draft_vocab_apply\n_mtp_draft_vocab_apply(Qwen3_8FlashNextMTP)\n' >> ${MTP_PY} \
+ && python3 -c "import ast; ast.parse(open('${MTP_PY}').read()); print('mtp.py draft-vocab hook patched OK')"
+
+# ---------------------------------------------------------------------------
+# 3. v16b source patches. Each is idempotent and asserts its own anchors, so a
+# moved upstream file fails the build instead of silently skipping.
+#
+# L5a: verify-path top-k/top-p through the Triton path
+# (VLLM_VERIFY_TOPK_TRITON=1).
+# ---------------------------------------------------------------------------
+COPY src/patch_verify_topk_pivot.py /tmp/patch_verify_topk_pivot.py
+RUN python3 /tmp/patch_verify_topk_pivot.py && rm /tmp/patch_verify_topk_pivot.py
+
+# R3: CuTe-DSL skinny GEMM dispatch plans, with the dual-family gate
+# (SM 12.x family OR SM 110 family) and the QWEN38NEXT_LLG_PDL knob
+# (QWEN38NEXT_LOW_LATENCY_GEMM=1). This is the Thor variant of the upstream
+# sm12x patch: gate widened, nothing else changed.
+COPY src/patch_low_latency_gemm_sm110.py /tmp/patch_low_latency_gemm_sm110.py
+RUN python3 /tmp/patch_low_latency_gemm_sm110.py && rm /tmp/patch_low_latency_gemm_sm110.py
+
+# R8: keep the trailing prefix-cache block for EAGLE-like spec decode
+# (VLLM_KEEP_DRAFT_BLOCKS=1). Last among the patches: it anchors on the
+# _os_hitdbg line patch_hit_debug.py inserts, which the BASE image already
+# inserted, so ordering only has to keep it after every other patch that edits
+# the same files.
+COPY src/patch_block_drop.py /tmp/patch_block_drop.py
+RUN python3 /tmp/patch_block_drop.py && rm /tmp/patch_block_drop.py
+
+# ---------------------------------------------------------------------------
+# 4. Build gate: run the three regression suites inside the image. The patch
+# scripts live under /selftest/src (the ITER6_PATCH_DIR default), the suites
+# under /selftest/tests, mirroring how the upstream recipe wires them.
+# Re-running a patch script must report "already applied" and change no bytes;
+# that is what these gates prove.
+# ---------------------------------------------------------------------------
+COPY src/ /selftest/src/
+COPY src/test_iter6_patches_image.py src/test_block_drop_cpu.py src/test_draft_vocab_cpu.py /selftest/tests/
+COPY src/patch_block_drop.py /tmp/patch_block_drop.py
+COPY src/blockdrop_base_sha256.json /tmp/base.json
+RUN python3 /selftest/tests/test_draft_vocab_cpu.py \
+ && python3 /selftest/tests/test_block_drop_cpu.py \
+ && VLLM_KEEP_DRAFT_BLOCKS=1 python3 /selftest/tests/test_block_drop_cpu.py \
+ && python3 /selftest/tests/test_iter6_patches_image.py \
+ && rm -rf /selftest /tmp/base.json /tmp/patch_block_drop.py

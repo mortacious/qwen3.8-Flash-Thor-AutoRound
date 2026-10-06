@@ -1,0 +1,56 @@
+# SPDX-License-Identifier: Apache-2.0
+# Effective environment for scripts/serve-ultrafast.sh (the v16b port for
+# Jetson AGX Thor). Every key here is a plain shell assignment; the launcher
+# sources this file with `set -a`, so all of it is exported.
+#
+# Key-for-key mirror of the upstream recipe's v16b env, with the Thor deltas
+# (KV_BYTES, and the two Thor knobs the local serve script has to set).
+# Everything here is user-editable: either edit this file or export the
+# variable before calling the launcher, which takes the exported value.
+
+NAME='qwen38-flash'
+# User-editable: the prepared dense-MTP g32 checkpoint (see
+# tools/ultrafast-build/build.sh -- the hybrid checkpoint plus int4 g32
+# quantisation of the nine MTP drafter modules). Default name = this repo's
+# hybrid checkpoint name with the -mtpdense-g32 suffix, as upstream does it.
+MODEL_DIR="$HOME/models/Qwen3.8-Flash-Next-W4A16-AutoRound-hybrid-mtpdense-g32"
+TABLE_DIR="$HOME/models/ple-table-fp8"
+PORT='8000'
+SERVED_NAME='qwen'
+TOOL_PARSER='qwen3_xml'
+PREFIX_CACHE='1'
+GPU_MEM='0.01'
+# Thor: 20g is the value measured on this box (the local serve.sh default);
+# the upstream Spark recipe ships 16g.
+KV_BYTES='20g'
+SEQS='8'
+MTP='3'
+CTX='262144'
+EXTRA='--enable-prompt-tokens-details'
+LOAD_FORMAT='fastsafetensors'
+CC=''
+PREWARM='1'
+WORKERS='32'
+PLE_PREFETCH='0'
+PLE_MADV_RANDOM='1'
+PLE_FAST_ROWS='16'
+PLE_CHUNK='8'
+PLE_STATS_SEC=''
+SPEC_EXTRA='{"rejection_sample_method":"block","draft_sample_method":"probabilistic"}'
+HIT_DEBUG='0'
+STEP_PROFILE='0'
+FP8_HYBRID='1'
+CUDA_LAUNCH_BLOCKING='0'
+FLASHINFER_AUTOTUNE='0'
+PIN_PROMPT=''
+PIN_MAX_FRACTION='0.25'
+
+# --- Jetson AGX Thor (sm_110) required knobs -------------------------------
+# Same two settings the root serve.sh exports for Thor, spelled in the form the
+# container reads (the launcher maps them straight onto -e flags):
+#   VLLM_QSA_EXACT_TOPK=1      the stock cooperative-cluster top-k kernel does
+#                              not launch on sm_110 (cluster misconfiguration)
+#   VLLM_GDN_DECODE_KERNEL=triton  the fused CUDA GDN decode kernel has no
+#                              sm_110 cubin, so MTP needs the Triton one
+VLLM_QSA_EXACT_TOPK='1'
+VLLM_GDN_DECODE_KERNEL='triton'
