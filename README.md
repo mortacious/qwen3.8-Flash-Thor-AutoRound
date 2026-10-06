@@ -195,11 +195,16 @@ n=2:
 
 | | decode (tok/s avg, runs) | acceptance (tok/step) |
 |---|---|---|
-| baseline (main recipe) | 30.8 (29.5 / 32.0) | 2.50-2.75 |
+| baseline (main recipe) | 30.8 (29.5 / 32.0) | 2.50-2.75 (same-day re-measure) |
 | port (v16b identity config) | 47.5 (46.9 / 48.1) | 2.37-2.62 |
 | delta | **+54%** | - |
 
-A/B, as warm-rep deltas against the identity 48.1 tok/s: drafter-experts fp8
+The baseline acceptance range was re-measured the same day on the running
+server; the main recipe's earlier documented range was 2.37-2.62, so treat
+acceptance as comparable between the two configs.
+
+A/B, as warm-rep deltas against the identity 48.1 tok/s (each arm measured
+independently; effects overlap, deltas are not additive): drafter-experts fp8
 off -2.5 tok/s; low-latency GEMM (R3) off -3.7 tok/s; all five experimental
 knobs off -5.5 tok/s. Acceptance is unchanged in every arm. The three
 marginal knobs (`verify-topk-triton`, `keep-draft-blocks`, the PLE fast path)

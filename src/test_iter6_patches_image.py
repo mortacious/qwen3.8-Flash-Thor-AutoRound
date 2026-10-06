@@ -119,7 +119,7 @@ def test_llg():
 
 
 # --------------------------------------------------------------------------- #
-# Patch 4 -- L5a, verify-path truncation
+# Patch 3 -- L5a, verify-path truncation
 # --------------------------------------------------------------------------- #
 def test_topk():
     print("[3] patch_verify_topk_pivot.py")
