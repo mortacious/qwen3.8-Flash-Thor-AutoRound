@@ -1,7 +1,9 @@
 # SPDX-License-Identifier: Apache-2.0
 # Effective environment for scripts/serve-ultrafast.sh (the v16b port for
 # Jetson AGX Thor). Every key here is a plain shell assignment; the launcher
-# sources this file with `set -a`, so all of it is exported.
+# reads the file line by line and `eval`s each assignment with `export` (it
+# does not `set -a`), and a value the caller already exported wins over this
+# file's.
 #
 # Key-for-key mirror of the upstream recipe's v16b env, with the Thor deltas
 # (KV_BYTES, and the two Thor knobs the local serve script has to set).

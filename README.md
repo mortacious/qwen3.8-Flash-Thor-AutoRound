@@ -169,6 +169,62 @@ definitions as the appendix; `serve.sh` defaults, MTP=3, triton GDN kernel):
 Spec-decode acceptance on Thor: 2.37-2.62 tok/step (46-54% accept) on W1,
 2.87-3.04 tok/step (62-68% accept) on W2.
 
+## UltraFast v16b port (experimental branch)
+
+The `ultrafast-v16b-port` branch ports
+[dime-online/qwen3.8-Flash-DGX-UltraFast](https://github.com/dime-online/qwen3.8-Flash-DGX-UltraFast)
+(v16b, Apache-2.0; see `NOTICE`) onto this Thor (sm_110) recipe. New files:
+`Dockerfile.ultrafast`, `scripts/build-ultrafast.sh`, `scripts/serve-ultrafast.sh`,
+`config/ultrafast/` (env + the gzipped draft vocabulary), the new `src/`
+patches (block-drop, draft vocab, verify topk, the sm_110 LLG gate, and the
+fp8-hybrid / PLE-mmap supersets), and `tools/ultrafast-build/` (the T80
+drafter builder). Not ported (deferred): the short-conv async H2D copy, the
+`in_proj_ba` Triton GEMV pair, PLE rendezvous, and the draft-mass measure hook.
+
+Build with `scripts/build-ultrafast.sh` (tags
+`qwen38-flash-dgx:ultrafast-thor-<date>`). `tools/ultrafast-build/build.sh`
+builds the dense-MTP g32 drafter checkpoint (~5 GB new; the shard count is
+unchanged and the shards are hardlinked to the source checkpoint - do not
+delete or move the source). The draft vocab gz ships in `config/ultrafast/`.
+Serve with `scripts/serve-ultrafast.sh` (it reads `config/ultrafast/env`;
+`--print` inspects without launching; it defaults `MODEL_DIR` to the
+hybrid-mtpdense-g32 directory and `KV_BYTES=20g`).
+
+Measured on one AGX Thor with a same-day A/B, a fresh 1000-token essay decode,
+n=2:
+
+| | decode (tok/s avg, runs) | acceptance (tok/step) |
+|---|---|---|
+| baseline (main recipe) | 30.8 (29.5 / 32.0) | 2.50-2.75 |
+| port (v16b identity config) | 47.5 (46.9 / 48.1) | 2.37-2.62 |
+| delta | **+54%** | - |
+
+A/B, as warm-rep deltas against the identity 48.1 tok/s: drafter-experts fp8
+off -2.5 tok/s; low-latency GEMM (R3) off -3.7 tok/s; all five experimental
+knobs off -5.5 tok/s. Acceptance is unchanged in every arm. The three
+marginal knobs (`verify-topk-triton`, `keep-draft-blocks`, the PLE fast path)
+net only ~0.7 tok/s - within noise - but are kept ON to preserve the v16b
+identity.
+
+A healthy launch logs these gate lines:
+
+```
+mtp draft vocab: K=65536 of 248320
+Using TRITON Fp8 MoE backend
+iter6 L5a installed
+iter6 R8 installed: keep-draft-blocks on
+iter6 R3 installed: 145 dispatch attachments, accepted shapes [(96, 2560), (320, 10240), (336, 10240), (640, 2560)], PDL=off
+```
+
+Caveats: the draft vocabulary is English/code-weighted, so CJK output sees
+lower draft acceptance (a speed effect only - the exact verifier keeps output
+quality). Greedy-output parity is noisy across identical runs
+(`VLLM_MARLIN_USE_ATOMIC_ADD=1` nondeterministic reductions), so byte-parity
+is not a reliable check. The "Unknown vLLM environment variable detected"
+warnings for `VLLM_DRAFTER_EXPERTS_FP8`, `VLLM_FP8_HYBRID`, and
+`VLLM_KEEP_DRAFT_BLOCKS` are expected - the vendored patches read them
+directly.
+
 ## Requirements
 
 - An **NVIDIA DGX Spark or compatible GB10 (sm_121)** box, 128 GB unified memory,

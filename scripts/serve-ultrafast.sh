@@ -225,6 +225,15 @@ DV_ARGS=(-v "$MTP_DRAFT_VOCAB:/draft-vocab/ids.txt:ro"
          -e VLLM_MTP_DRAFT_VOCAB=/draft-vocab/ids.txt)
 build_docker_run
 
+# Refuse to clobber an existing container unless explicitly forced: a name
+# collision is otherwise a silent stop+replace of whatever is running.
+if [ "${ULTRAFAST_FORCE:-0}" != 1 ]; then
+  if docker ps -a --format '{{.Names}}' | grep -Fxq "$NAME"; then
+    echo "serve-ultrafast.sh: a container named $NAME already exists; use NAME=<other> ./scripts/serve-ultrafast.sh to run alongside, or ULTRAFAST_FORCE=1 to stop+replace it" >&2
+    exit 1
+  fi
+fi
+
 docker rm -f "$NAME" >/dev/null 2>&1 || true
 "${DOCKER_RUN[@]}"
 

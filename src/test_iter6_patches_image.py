@@ -122,7 +122,7 @@ def test_llg():
 # Patch 4 -- L5a, verify-path truncation
 # --------------------------------------------------------------------------- #
 def test_topk():
-    print("[4] patch_verify_topk_pivot.py")
+    print("[3] patch_verify_topk_pivot.py")
     for p in (TOPK_OPS, STATES, GPU_SAMPLER, REJ):
         check(parses(p), "%s parses" % p.rsplit("/", 1)[-1])
     ops = open(TOPK_OPS).read()
@@ -162,8 +162,6 @@ def main():
     for name in (
         "QWEN38NEXT_LOW_LATENCY_GEMM",
         "QWEN38NEXT_LLG_PDL",
-        "VLLM_INPROJ_BA_GEMV",
-        "VLLM_PLE_MMAP_ASYNC_IDS",
         "VLLM_VERIFY_TOPK_TRITON",
     ):
         os.environ.pop(name, None)
