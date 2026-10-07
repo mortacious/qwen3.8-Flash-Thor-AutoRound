@@ -41,6 +41,8 @@ PLE_STATS_SEC=''
 SPEC_EXTRA='{"rejection_sample_method":"block","draft_sample_method":"probabilistic"}'
 HIT_DEBUG='0'
 STEP_PROFILE='0'
+# bf16 recurrent GDN state (vs float32 from the checkpoint): crash-safe A/B on Thor +2.4% decode tok/s / +5.6% KV tokens, NVIDIA-endorsed default here; long-run BF16-state validation pending.
+SSM_CACHE_DTYPE='bfloat16'
 FP8_HYBRID='1'
 CUDA_LAUNCH_BLOCKING='0'
 FLASHINFER_AUTOTUNE='0'
@@ -52,7 +54,7 @@ PIN_MAX_FRACTION='0.25'
 # container reads (the launcher maps them straight onto -e flags):
 #   VLLM_QSA_EXACT_TOPK=1      the stock cooperative-cluster top-k kernel does
 #                              not launch on sm_110 (cluster misconfiguration)
-#   VLLM_GDN_DECODE_KERNEL=triton  the fused CUDA GDN decode kernel has no
-#                              sm_110 cubin, so MTP needs the Triton one
+#   VLLM_GDN_DECODE_KERNEL=cuda    the fused SM110a CUDA GDN decode kernel is
+#                              now vendored in-image and is the default (triton = fallback)
 VLLM_QSA_EXACT_TOPK='1'
-VLLM_GDN_DECODE_KERNEL='triton'
+VLLM_GDN_DECODE_KERNEL='cuda'

@@ -50,7 +50,7 @@ done < "$envfile"
 
 # --- defaults for a direct call (the env file supplies all of these) --------
 NAME="${NAME:-qwen38-flash}"
-IMAGE="${IMAGE:-qwen38-flash-dgx:ultrafast-thor-20261006}"
+IMAGE="${IMAGE:-qwen38-flash-dgx:ultrafast-thor-20261007}"
 MODEL_DIR="${MODEL_DIR:-/models/Qwen3.8-Flash-Next-W4A16-AutoRound-hybrid-mtpdense-g32}"
 TABLE_DIR="${TABLE_DIR:-/models/ple-table-fp8}"
 PORT="${PORT:-18300}"
@@ -114,10 +114,21 @@ LOW_LATENCY_GEMM="${LOW_LATENCY_GEMM:-1}"
 LLG_PDL="${LLG_PDL:-0}"
 VERIFY_TOPK_TRITON="${VERIFY_TOPK_TRITON:-1}"
 KEEP_DRAFT_BLOCKS="${KEEP_DRAFT_BLOCKS:-1}"
+# Recurrent GDN state precision. The checkpoint's float32 state is the stock
+# default; bfloat16 is the Thor A/B winner (+2.4% decode tok/s warm, +5.6%
+# KV-cache tokens) and NVIDIA's endorsed default for this model on Thor.
+# Empty string means "do not pass the flag at all".
+SSM_CACHE_DTYPE="${SSM_CACHE_DTYPE-bfloat16}"
+case "$SSM_CACHE_DTYPE" in
+  ''|auto|bfloat16|float16|float32) ;;
+  *) echo "serve-ultrafast.sh: SSM_CACHE_DTYPE must be one of auto, bfloat16, float16, float32 (or empty to omit the flag): $SSM_CACHE_DTYPE" >&2; exit 1 ;;
+esac
+SSM_CACHE_ARG=()
+[ -n "$SSM_CACHE_DTYPE" ] && SSM_CACHE_ARG=(--mamba-ssm-cache-dtype "$SSM_CACHE_DTYPE")
 # Thor: the two sm_110 workarounds, also accepting the root serve.sh's short
 # spellings (QSA_EXACT_TOPK / GDN_DECODE_KERNEL) as aliases.
 VLLM_QSA_EXACT_TOPK="${VLLM_QSA_EXACT_TOPK:-${QSA_EXACT_TOPK:-1}}"
-VLLM_GDN_DECODE_KERNEL="${VLLM_GDN_DECODE_KERNEL:-${GDN_DECODE_KERNEL:-triton}}"
+VLLM_GDN_DECODE_KERNEL="${VLLM_GDN_DECODE_KERNEL:-${GDN_DECODE_KERNEL:-cuda}}"
 
 # One flat list of container env, so --print can print exactly what is set
 # without a second copy of the list drifting away from the real one.
@@ -175,6 +186,7 @@ build_docker_run() {
       $CC \
       $AT_ARG \
       --kv-cache-dtype auto \
+      "${SSM_CACHE_ARG[@]}" \
       $EXTRA \
       --enable-auto-tool-choice --tool-call-parser "$TOOL_PARSER" --reasoning-parser qwen3 \
       "${PIN_ARG[@]}" "${SPEC[@]}")

@@ -25,7 +25,7 @@ here="$(cd "$(dirname "$0")" && pwd)"
 models_root="$(realpath "${MODELS_ROOT:-$HOME/models}")"
 model_dir="$(realpath "${MODEL_DIR:-$models_root/Qwen3.8-Flash-Next-W4A16-AutoRound-hybrid}")"
 out_dir="$(realpath -m "${OUT_DIR:-$models_root/Qwen3.8-Flash-Next-W4A16-AutoRound-hybrid-mtpdense-g32}")"
-image="${IMAGE:-qwen38-flash-dgx:ultrafast-thor-20261006}"
+image="${IMAGE:-qwen38-flash-dgx:ultrafast-thor-20261007}"
 
 [ -d "$model_dir" ] || { echo "missing base checkpoint: $model_dir" >&2; exit 66; }
 [ "$(dirname "$model_dir")" = "$models_root" ] || { echo 'MODEL_DIR must be a direct child of MODELS_ROOT' >&2; exit 64; }

@@ -84,8 +84,9 @@ RUN python3 /tmp/patch_block_drop.py && rm /tmp/patch_block_drop.py
 # PR #53835), vendored under src/thorgdn/. Built in its own torch namespace
 # ("thor_gdn") with torch's cpp_extension loader, targeting sm_110a, then
 # redirected into vllm/_custom_ops.py so the MTP path resolves it. Nothing
-# here flips VLLM_GDN_DECODE_KERNEL: the Triton path stays the default until
-# the device A/B proves the CUDA path. The zero-GPU gate below only proves the
+# here flips VLLM_GDN_DECODE_KERNEL: the CUDA path is the default after the
+# on-device A/B won (+3.4% warm rep2, 22/22 numerical suite); Triton stays as
+# the env-override fallback. The zero-GPU gate below only proves the
 # .so was produced and the redirect landed; the 22-test CUDA suite needs a GPU
 # and runs device-side post-build, not in the image build.
 # ---------------------------------------------------------------------------

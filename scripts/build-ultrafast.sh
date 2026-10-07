@@ -25,8 +25,8 @@ here="$(cd "$(dirname "$0")/.." && pwd)"
 
 # The base tag the existing serve scripts use (scripts/serve-intel-ar.sh).
 base_image="${BASE_IMAGE:-qwen38-flash-dgx}"
-# <base-name>:ultrafast-thor-20261006, base name taken from BASE_IMAGE.
-image="${IMAGE:-${base_image%%:*}:ultrafast-thor-20261006}"
+# <base-name>:ultrafast-thor-20261007, base name taken from BASE_IMAGE.
+image="${IMAGE:-${base_image%%:*}:ultrafast-thor-20261007}"
 
 # Fail before pulling or building anything if a build input is not present.
 missing=()

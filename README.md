@@ -190,6 +190,12 @@ Serve with `scripts/serve-ultrafast.sh` (it reads `config/ultrafast/env`;
 `--print` inspects without launching; it defaults `MODEL_DIR` to the
 hybrid-mtpdense-g32 directory and `KV_BYTES=20g`).
 
+The branch image also ships the out-of-tree SM110a fused GDN decode kernel,
+compiled in-image at build time from pinned upstream vLLM source
+`082cf021b7ef96e4819e386846ea34e5ef21c655` (PR #53835), so the served default is
+now `VLLM_GDN_DECODE_KERNEL=cuda`; `triton` remains available as a fallback via
+the env override.
+
 Measured on one AGX Thor with a same-day A/B, a fresh 1000-token essay decode,
 n=2:
 
@@ -210,6 +216,12 @@ knobs off -5.5 tok/s. Acceptance is unchanged in every arm. The three
 marginal knobs (`verify-topk-triton`, `keep-draft-blocks`, the PLE fast path)
 net only ~0.7 tok/s - within noise - but are kept ON to preserve the v16b
 identity.
+
+A same-day GDN-decode A/B (identical prompt, warm rep2) measured the fused
+`cuda` kernel at 46.11 tok/s vs 44.59 tok/s for `triton` (+3.4%); rep1 was
+within noise, acceptance was unchanged (control 2.68 / cuda 2.70 mean), and KV
+sizing was identical (644,732 tokens, 2.46x). The 22-case numerical suite
+(vendored `test_fused_gdn_post_conv.py`) passed on-device.
 
 A healthy launch logs these gate lines:
 
@@ -317,7 +329,7 @@ or edit the paths in `serve.sh` (the example config used above) and run it.
 | `KV_BYTES` | `20g` | Explicit KV pool size, passed as `--kv-cache-memory-bytes` (bare script: unset) |
 | `MTP` | `3` | Speculative tokens from the MTP head (`0` = off; bare script: `2`) |
 | `QSA_EXACT_TOPK` | `1` | Exact-topk dispatch for the QSA indexer (patch 9); required on Thor (sm_110), Spark: `0` |
-| `GDN_DECODE_KERNEL` | `triton` | GDN decode kernel; required on Thor (sm_110) with MTP (vllm#53462), Spark: `cuda` |
+| `GDN_DECODE_KERNEL` | `triton` | GDN decode kernel; required on Thor (sm_110) with MTP (vllm#53462), Spark: `cuda` (on the ultrafast branch: default cuda - the fused SM110a kernel is vendored into the image) |
 | `PREFIX_CACHE` | `1` | Prefix caching — fixed and recommended on this fork (bare script: `0`) |
 | `PIN_PROMPT` / `PIN_MAX_FRACTION` | unset / `0.25` | Never-evict pin (patch 6); needs `PREFIX_CACHE=1` |
 | `FP8_HYBRID` | `1` | int4+fp8 hybrid dispatch (patch 4) |
