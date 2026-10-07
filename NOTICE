@@ -30,3 +30,8 @@ credited at https://github.com/vllm-project/vllm .
 
 Model weights, datasets and downloaded container layers are not included in
 this repository and remain under their own terms.
+
+The out-of-tree SM110a fused GDN decode kernel under src/thorgdn/ vendors
+sources from vllm-project/vllm @ 082cf021b7ef96e4819e386846ea34e5ef21c655
+(Apache-2.0), compiled for sm_110a; the dispatch/base tooling pattern is
+adapted from pastoriomarco/NemoClaw-Thor (Apache-2.0).

@@ -17,7 +17,10 @@
 #   3. the three v16b source patches. Order matters only for block drop: it
 #      anchors on the line patch_hit_debug.py inserts into
 #      single_type_kv_cache_manager.py, which the base image already inserted.
-#   4. the in-image regression gates, as a build gate: the image does not
+#   4. the out-of-tree SM110a fused GDN decode kernel (upstream vLLM commit
+#      082cf021b7ef96e4819e386846ea34e5ef21c655, PR #53835): compiled in-image
+#      into its own torch namespace and redirected into vllm/_custom_ops.py.
+#   5. the in-image regression gates, as a build gate: the image does not
 #      build unless all three pass.
 #
 # SPDX-License-Identifier: Apache-2.0
@@ -77,7 +80,27 @@ COPY src/patch_block_drop.py /tmp/patch_block_drop.py
 RUN python3 /tmp/patch_block_drop.py && rm /tmp/patch_block_drop.py
 
 # ---------------------------------------------------------------------------
-# 4. Build gate: run the three regression suites inside the image. The patch
+# 4. Out-of-tree SM110a fused GDN decode kernel (upstream vLLM @ 082cf021...,
+# PR #53835), vendored under src/thorgdn/. Built in its own torch namespace
+# ("thor_gdn") with torch's cpp_extension loader, targeting sm_110a, then
+# redirected into vllm/_custom_ops.py so the MTP path resolves it. Nothing
+# here flips VLLM_GDN_DECODE_KERNEL: the Triton path stays the default until
+# the device A/B proves the CUDA path. The zero-GPU gate below only proves the
+# .so was produced and the redirect landed; the 22-test CUDA suite needs a GPU
+# and runs device-side post-build, not in the image build.
+# ---------------------------------------------------------------------------
+COPY src/thorgdn/ /opt/thor-gdn/
+ENV MAX_JOBS=2
+ENV TORCH_CUDA_ARCH_LIST=11.0a
+RUN python3 /opt/thor-gdn/build.py
+RUN python3 /opt/thor-gdn/install.py
+RUN test -f /opt/thor-gdn/build/thor_gdn.so \
+ && grep -q 'thor_gdn_redirect_v1' ${SP}/vllm/_custom_ops.py \
+ && grep -q 'torch.ops.thor_gdn.fused_gdn_decode_post_conv_mtp(' ${SP}/vllm/_custom_ops.py \
+ && echo 'thor_gdn kernel built and _custom_ops redirect present'
+
+# ---------------------------------------------------------------------------
+# 5. Build gate: run the three regression suites inside the image. The patch
 # scripts live under /selftest/src (the ITER6_PATCH_DIR default), the suites
 # under /selftest/tests, mirroring how the upstream recipe wires them.
 # Re-running a patch script must report "already applied" and change no bytes;
