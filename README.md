@@ -169,7 +169,7 @@ definitions as the appendix; `serve.sh` defaults, MTP=3, triton GDN kernel):
 Spec-decode acceptance on Thor: 2.37-2.62 tok/step (46-54% accept) on W1,
 2.87-3.04 tok/step (62-68% accept) on W2.
 
-## UltraFast v16b port (experimental branch)
+## UltraFast v16b port (experimental)
 
 The `ultrafast-v16b-port` branch ports
 [dime-online/qwen3.8-Flash-DGX-UltraFast](https://github.com/dime-online/qwen3.8-Flash-DGX-UltraFast)
@@ -190,11 +190,11 @@ Serve with `scripts/serve-ultrafast.sh` (it reads `config/ultrafast/env`;
 `--print` inspects without launching; it defaults `MODEL_DIR` to the
 hybrid-mtpdense-g32 directory and `KV_BYTES=20g`).
 
-The branch image also ships the out-of-tree SM110a fused GDN decode kernel,
+This stack's image also ships the out-of-tree SM110a fused GDN decode kernel,
 compiled in-image at build time from pinned upstream vLLM source
 `082cf021b7ef96e4819e386846ea34e5ef21c655` (PR #53835), so the served default is
 now `VLLM_GDN_DECODE_KERNEL=cuda`; `triton` remains available as a fallback via
-the env override.
+the env override. The kernel is vendored under `src/thorgdn/`.
 
 Measured on one AGX Thor with a same-day A/B, a fresh 1000-token essay decode,
 n=2:
@@ -223,6 +223,20 @@ within noise, acceptance was unchanged (control 2.68 / cuda 2.70 mean), and KV
 sizing was identical (644,732 tokens, 2.46x). The 22-case numerical suite
 (vendored `test_fused_gdn_post_conv.py`) passed on-device.
 
+The recurrent-state cache dtype is now a launcher knob, `SSM_CACHE_DTYPE=bfloat16`
+(flag `--mamba-ssm-cache-dtype`). Against the FP32 default it grew the KV pool
+from 644,732 to 680,640 tokens (+5.6%, mamba_block_size 1600 -> 832) and measured
++2.4% warm same-session; it matches NVIDIA's endorsed default for this model on
+Thor. Caveat: long-run stability of a bf16 state has not been validated over
+days. Accepted values are `auto`, `bfloat16`, `float16`, `float32`, or empty to
+omit the flag (`SSM_CACHE_DTYPE=float32` restores the FP32 original).
+
+With both knobs on (identity otherwise), a same-session control measured warm
+rep2 38.89 -> 53.53 tok/s: **+37.6%** (n=1 per arm; the +3.4% and +2.4% figures
+above are the separately-attributed clean A/Bs). Absolute cross-session levels
+on this device swing by several tok/s, so only same-session deltas are
+trustworthy. 53.53 tok/s is the best warm decode seen on the device.
+
 A healthy launch logs these gate lines:
 
 ```
@@ -241,6 +255,11 @@ is not a reliable check. The "Unknown vLLM environment variable detected"
 warnings for `VLLM_DRAFTER_EXPERTS_FP8`, `VLLM_FP8_HYBRID`, and
 `VLLM_KEEP_DRAFT_BLOCKS` are expected - the vendored patches read them
 directly.
+
+**Status:** this stack is merged into `main` at commit `b2058ce` (7 commits,
+`c24bdf2..b2058ce`) and is the branch and `main` default. The pre-ultrafast base
+recipe remains available via `scripts/serve-intel-ar.sh` (triton GDN fallback +
+FP32 SSM `auto`) and via `git checkout b2058ce~1`.
 
 ## Requirements
 
